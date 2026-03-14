@@ -1,0 +1,540 @@
+{
+  "name": "WhatsApp Appointment Booking Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["messages"],
+        "options": {}
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000001",
+      "name": "WhatsApp Trigger",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [240, 400],
+      "webhookId": "whatsapp-webhook-001",
+      "credentials": {
+        "whatsAppTriggerApi": {
+          "id": "whatsapp-cred-001",
+          "name": "WhatsApp Business Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const entry = $input.first().json;\n\nlet phone = '';\nlet name = '';\nlet messageText = '';\nlet messageId = '';\nlet waId = '';\n\ntry {\n  const changes = entry.entry?.[0]?.changes?.[0];\n  const value = changes?.value;\n  const message = value?.messages?.[0];\n  const contact = value?.contacts?.[0];\n\n  phone = message?.from || '';\n  messageText = message?.text?.body || '';\n  messageId = message?.id || '';\n  waId = contact?.wa_id || phone;\n  name = contact?.profile?.name || 'Unknown';\n} catch(e) {\n  phone = entry.from || '';\n  messageText = entry.text?.body || entry.body || '';\n  messageId = entry.id || '';\n  waId = phone;\n  name = 'Unknown';\n}\n\nreturn [{\n  json: {\n    phone,\n    name,\n    messageText,\n    messageId,\n    waId,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "1a2b3c4d-0002-0002-0002-000000000002",
+      "name": "Extract Message Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.messageText }}",
+        "options": {
+          "systemMessage": "You are a professional appointment booking assistant for our company. Your job is to:\n1. Greet new leads warmly and collect their information (name, email, preferred appointment date/time)\n2. Recognize returning customers and personalize the interaction\n3. Help customers book, reschedule, or cancel appointments\n4. Answer questions about the company using the knowledge base tool\n5. Check the leads database to determine if a customer is new or returning\n6. Book appointments by updating the Google Sheets leads database\n7. Send confirmation emails via Gmail after booking\n\nCustomer Phone: {{ $json.phone }}\nCustomer Name: {{ $json.name }}\nCurrent Time: {{ $json.timestamp }}\n\nAlways be friendly, concise, and professional. When booking an appointment, always confirm the date, time, and collect an email address for the confirmation email. After booking, inform the customer they will receive an email confirmation."
+        }
+      },
+      "id": "1a2b3c4d-0003-0003-0003-000000000003",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.4,
+          "maxTokens": 1024
+        }
+      },
+      "id": "1a2b3c4d-0004-0004-0004-000000000004",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [560, 620],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred-001",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Extract Message Data').item.json.phone }}",
+        "contextWindowLength": 20
+      },
+      "id": "1a2b3c4d-0005-0005-0005-000000000005",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [720, 620]
+    },
+    {
+      "parameters": {
+        "name": "check_lead_in_database",
+        "description": "Check if a lead/customer exists in the Google Sheets database by their phone number. Returns lead details including name, email, appointment history, and status (new or returning). Use this FIRST when a new message arrives to personalize the response.",
+        "workflowId": "={{ $workflow.id }}",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "phone": "={{ $('Extract Message Data').item.json.phone }}"
+          }
+        }
+      },
+      "id": "1a2b3c4d-0006-0006-0006-000000000006",
+      "name": "Tool: Check Lead Database",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [880, 620]
+    },
+    {
+      "parameters": {
+        "name": "book_appointment",
+        "description": "Book or update an appointment for a lead in the Google Sheets database. Use this when the customer confirms an appointment date and time. Required inputs: phone, name, email, appointmentDate (YYYY-MM-DD), appointmentTime (HH:MM), service (type of appointment). Returns confirmation details.",
+        "workflowId": "={{ $workflow.id }}",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "phone": "={{ $('Extract Message Data').item.json.phone }}",
+            "action": "book"
+          }
+        }
+      },
+      "id": "1a2b3c4d-0007-0007-0007-000000000007",
+      "name": "Tool: Book Appointment",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [1040, 620]
+    },
+    {
+      "parameters": {
+        "name": "search_knowledge_base",
+        "description": "Search the company knowledge base for information about services, pricing, working hours, location, policies, FAQs, and any other company-related information. Use this when a customer asks about the company or its services.",
+        "workflowId": "={{ $workflow.id }}",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('query', 'The search query to look up in the knowledge base', 'string') }}"
+          }
+        }
+      },
+      "id": "1a2b3c4d-0008-0008-0008-000000000008",
+      "name": "Tool: Search Knowledge Base",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [1200, 620]
+    },
+    {
+      "parameters": {
+        "name": "send_confirmation_email",
+        "description": "Send an appointment confirmation email to the customer via Gmail. Use this AFTER successfully booking an appointment. Required inputs: customerEmail, customerName, appointmentDate, appointmentTime, service. This sends a professional confirmation email with all appointment details.",
+        "workflowId": "={{ $workflow.id }}",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "customerEmail": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('customerEmail', 'The customer email address', 'string') }}",
+            "customerName": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('customerName', 'The customer full name', 'string') }}",
+            "appointmentDate": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('appointmentDate', 'The appointment date in YYYY-MM-DD format', 'string') }}",
+            "appointmentTime": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('appointmentTime', 'The appointment time in HH:MM format', 'string') }}",
+            "service": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('service', 'The type of service or appointment', 'string') }}"
+          }
+        }
+      },
+      "id": "1a2b3c4d-0009-0009-0009-000000000009",
+      "name": "Tool: Send Confirmation Email",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [1360, 620]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Extract Message Data').item.json.phone }}",
+        "message": "={{ $json.output }}",
+        "additionalFields": {}
+      },
+      "id": "1a2b3c4d-0010-0010-0010-000000000010",
+      "name": "Send WhatsApp Reply",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [980, 400],
+      "credentials": {
+        "whatsAppApi": {
+          "id": "whatsapp-cred-002",
+          "name": "WhatsApp Business API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "lookup",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "lookupColumn": "Phone",
+        "lookupValue": "={{ $json.phone }}",
+        "options": {
+          "returnAllMatches": true
+        }
+      },
+      "id": "1a2b3c4d-0011-0011-0011-000000000011",
+      "name": "GSheets: Lookup Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1400, 160],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gsheets-cred-001",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (!items || items.length === 0 || !items[0].json || Object.keys(items[0].json).length === 0) {\n  return [{ json: { status: 'new_lead', message: 'This is a new lead with no previous history.' } }];\n}\nconst lead = items[0].json;\nreturn [{ json: { status: 'returning_lead', lead, message: `Returning lead found: ${lead.Name || 'Unknown'}, Email: ${lead.Email || 'N/A'}, Last Appointment: ${lead['Last Appointment'] || 'N/A'}` } }];"
+      },
+      "id": "1a2b3c4d-0012-0012-0012-000000000012",
+      "name": "Format Lead Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1620, 160]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Phone": "={{ $json.phone }}",
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Appointment Date": "={{ $json.appointmentDate }}",
+            "Appointment Time": "={{ $json.appointmentTime }}",
+            "Service": "={{ $json.service }}",
+            "Status": "Booked",
+            "Last Updated": "={{ new Date().toISOString() }}"
+          },
+          "matchingColumns": ["Phone"],
+          "schema": [
+            { "id": "Phone", "displayName": "Phone", "required": false, "defaultMatch": true, "canBeUsedToMatch": true, "display": true, "type": "string", "removed": false },
+            { "id": "Name", "displayName": "Name", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false },
+            { "id": "Email", "displayName": "Email", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false },
+            { "id": "Appointment Date", "displayName": "Appointment Date", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false },
+            { "id": "Appointment Time", "displayName": "Appointment Time", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false },
+            { "id": "Service", "displayName": "Service", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false },
+            { "id": "Status", "displayName": "Status", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false },
+            { "id": "Last Updated", "displayName": "Last Updated", "required": false, "defaultMatch": false, "canBeUsedToMatch": false, "display": true, "type": "string", "removed": false }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1a2b3c4d-0013-0013-0013-000000000013",
+      "name": "GSheets: Save Appointment",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1400, 320],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gsheets-cred-001",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nreturn [{ json: { success: true, message: `Appointment booked successfully for ${input.name} on ${input.appointmentDate} at ${input.appointmentTime}.`, appointmentDate: input.appointmentDate, appointmentTime: input.appointmentTime, service: input.service, email: input.email, name: input.name } }];"
+      },
+      "id": "1a2b3c4d-0014-0014-0014-000000000014",
+      "name": "Confirm Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1620, 320]
+    },
+    {
+      "parameters": {
+        "operation": "lookup",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_KNOWLEDGE_BASE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Knowledge Base",
+          "mode": "name"
+        },
+        "lookupColumn": "Keywords",
+        "lookupValue": "={{ $json.query }}",
+        "options": {
+          "returnAllMatches": true
+        }
+      },
+      "id": "1a2b3c4d-0015-0015-0015-000000000015",
+      "name": "GSheets: Search Knowledge Base",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1400, 480],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gsheets-cred-001",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (!items || items.length === 0) {\n  return [{ json: { result: 'No specific information found in the knowledge base for this query. Please contact us directly for more details.' } }];\n}\nconst results = items.map(i => i.json).filter(r => Object.keys(r).length > 0);\nif (results.length === 0) {\n  return [{ json: { result: 'No specific information found. Please contact us directly.' } }];\n}\nconst combined = results.map(r => `Topic: ${r.Topic || 'General'}\\nAnswer: ${r.Answer || r.Content || JSON.stringify(r)}`).join('\\n\\n');\nreturn [{ json: { result: combined } }];"
+      },
+      "id": "1a2b3c4d-0016-0016-0016-000000000016",
+      "name": "Format KB Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1620, 480]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.customerEmail }}",
+        "subject": "Appointment Confirmation - {{ $json.appointmentDate }} at {{ $json.appointmentTime }}",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'><h2 style='color: #2c3e50;'>Appointment Confirmed!</h2><p>Dear {{ $json.customerName }},</p><p>Your appointment has been successfully booked. Here are your details:</p><table style='width: 100%; border-collapse: collapse; margin: 20px 0;'><tr style='background-color: #f2f2f2;'><td style='padding: 10px; border: 1px solid #ddd;'><strong>Service</strong></td><td style='padding: 10px; border: 1px solid #ddd;'>{{ $json.service }}</td></tr><tr><td style='padding: 10px; border: 1px solid #ddd;'><strong>Date</strong></td><td style='padding: 10px; border: 1px solid #ddd;'>{{ $json.appointmentDate }}</td></tr><tr style='background-color: #f2f2f2;'><td style='padding: 10px; border: 1px solid #ddd;'><strong>Time</strong></td><td style='padding: 10px; border: 1px solid #ddd;'>{{ $json.appointmentTime }}</td></tr></table><p>Please arrive 5 minutes early. If you need to reschedule or cancel, simply reply to this email or message us on WhatsApp.</p><p style='color: #7f8c8d; font-size: 12px;'>This is an automated confirmation. Please do not reply directly to this email.</p><p>We look forward to seeing you!</p><p><strong>Best regards,</strong><br>Our Team</p></body></html>",
+        "options": {}
+      },
+      "id": "1a2b3c4d-0017-0017-0017-000000000017",
+      "name": "Gmail: Send Confirmation",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1400, 640],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-cred-001",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { success: true, message: `Confirmation email sent to ${$input.first().json.customerEmail}` } }];"
+      },
+      "id": "1a2b3c4d-0018-0018-0018-000000000018",
+      "name": "Email Sent Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1620, 640]
+    }
+  ],
+  "connections": {
+    "WhatsApp Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Message Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Message Data": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Check Lead Database": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Book Appointment": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Search Knowledge Base": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Send Confirmation Email": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets: Lookup Lead": {
+      "main": [
+        [
+          {
+            "node": "Format Lead Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets: Save Appointment": {
+      "main": [
+        [
+          {
+            "node": "Confirm Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GSheets: Search Knowledge Base": {
+      "main": [
+        [
+          {
+            "node": "Format KB Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail: Send Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Email Sent Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2026-03-14T00:00:00.000Z",
+      "updatedAt": "2026-03-14T00:00:00.000Z",
+      "id": "tag-001",
+      "name": "WhatsApp"
+    },
+    {
+      "createdAt": "2026-03-14T00:00:00.000Z",
+      "updatedAt": "2026-03-14T00:00:00.000Z",
+      "id": "tag-002",
+      "name": "AI Agent"
+    },
+    {
+      "createdAt": "2026-03-14T00:00:00.000Z",
+      "updatedAt": "2026-03-14T00:00:00.000Z",
+      "id": "tag-003",
+      "name": "Appointments"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-14T00:00:00.000Z",
+  "versionId": "v1.0.0",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "n8nVersion": "1.68.0"
+  },
+  "__SETUP_INSTRUCTIONS__": {
+    "note": "READ BEFORE IMPORTING",
+    "steps": [
+      "1. WHATSAPP: Connect your WhatsApp Business API credentials to both 'WhatsApp Trigger' and 'Send WhatsApp Reply' nodes.",
+      "2. OPENAI: Add your OpenAI API key to the 'OpenAI Chat Model' node.",
+      "3. GOOGLE SHEETS (Leads): Replace 'YOUR_GOOGLE_SHEET_ID_HERE' in 'GSheets: Lookup Lead' and 'GSheets: Save Appointment' with your actual Leads Google Sheet ID. Sheet must have columns: Phone, Name, Email, Appointment Date, Appointment Time, Service, Status, Last Updated.",
+      "4. GOOGLE SHEETS (Knowledge Base): Replace 'YOUR_KNOWLEDGE_BASE_SHEET_ID_HERE' in 'GSheets: Search Knowledge Base' with your Knowledge Base Sheet ID. Sheet must have columns: Keywords, Topic, Answer.",
+      "5. GMAIL: Connect your Gmail OAuth2 credentials to the 'Gmail: Send Confirmation' node.",
+      "6. TOOL WORKFLOW IDs: The 4 Tool nodes (Check Lead, Book Appointment, Search Knowledge Base, Send Email) use 'toolWorkflow' type. After import, update each tool node to point to THIS workflow's ID (found in the URL when editing the workflow). This enables the AI Agent to call these sub-flows internally.",
+      "7. SYSTEM PROMPT: Edit the system message in the 'AI Agent' node to include your actual company name, services, and working hours.",
+      "8. TEST: Send a test WhatsApp message to trigger the workflow."
+    ]
+  }
+}
